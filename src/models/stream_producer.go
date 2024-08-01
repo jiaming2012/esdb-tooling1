@@ -5,17 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 
 	"github.com/EventStore/EventStore-Client-Go/v4/esdb"
 	log "github.com/sirupsen/logrus"
 )
 
 type EsdbProducer struct {
-	wg              *sync.WaitGroup
-	db              *esdb.Client
-	url             string
-	lastEventNumber uint64
+	db *esdb.Client
 }
 
 func (cli *EsdbProducer) insertEvent(ctx context.Context, eventType EventType, streamName StreamName, meta []byte, data []byte) error {
@@ -42,18 +38,13 @@ func (cli *EsdbProducer) insertEvent(ctx context.Context, eventType EventType, s
 	return nil
 }
 
-func (cli *EsdbProducer) insertData(ctx context.Context, event StreamEvent, data map[string]interface{}) error {
-	// set the schema version
-	eventHeader := event.GetStreamEventHeader()
-	schemaVersion := event.GetStreamEventHeader().SchemaVersion
-	eventHeader.SetSchemaVersion(schemaVersion)
+func (cli *EsdbProducer) insertData(ctx context.Context, event StreamEvent) error {
+	header := event.GetStreamEventHeader()
 
-	bytes, err := json.Marshal(data)
+	bytes, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-
-	header := event.GetStreamEventHeader()
 
 	log.Debugf("saving %s to stream %s ...", header.EventType, header.StreamName)
 
@@ -64,6 +55,12 @@ func (cli *EsdbProducer) insertData(ctx context.Context, event StreamEvent, data
 	return nil
 }
 
-func (cli *EsdbProducer) SaveData(ctx context.Context, event StreamEvent, data map[string]interface{}) error {
-	return cli.insertData(ctx, event, data)
+func (cli *EsdbProducer) SaveData(ctx context.Context, event StreamEvent) error {
+	return cli.insertData(ctx, event)
+}
+
+func NewEsdbProducer(db *esdb.Client) *EsdbProducer {
+	return &EsdbProducer{
+		db: db,
+	}
 }

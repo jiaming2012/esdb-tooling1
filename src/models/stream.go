@@ -7,16 +7,22 @@ import (
 type StreamName string
 
 type StreamEventHeader struct {
-	RequestID     uuid.UUID
 	StreamName    StreamName
 	EventType     EventType
 	SchemaVersion int
 }
 
-func (h *StreamEventHeader) SetSchemaVersion(version int) {
-	h.SchemaVersion = version
+type StreamEventMeta struct {
+	RequestID     uuid.UUID
+	IsReplay      bool
+}
+
+func (m *StreamEventMeta) SetMeta(requstID uuid.UUID, isReplay bool) {
+	m.RequestID = requstID
+	m.IsReplay = isReplay
 }
 
 type StreamEvent interface {
-	GetStreamEventHeader() StreamEventHeader
+	GetStreamEventHeader() *StreamEventHeader
+	GetStreamEventMeta() *StreamEventMeta
 }

@@ -6,17 +6,12 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
-	"time"
 
-	"github.com/EventStore/EventStore-Client-Go/v4/esdb"
 	log "github.com/sirupsen/logrus"
 
 	"jiaming2012/esdb-tooling-1/src/models"
+	"jiaming2012/esdb-tooling-1/src/services"
 )
-
-func generateRandomCandles(*esdb.Client) {
-
-}
 
 func main() {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -27,25 +22,29 @@ func main() {
 	signal.Notify(stop, os.Interrupt)
 	signal.Notify(stop, syscall.SIGTERM)
 
+	// Create a new EventStoreDB client
 	url := "esdb://localhost:2113?tls=false"
-
-	settings, err := esdb.ParseConnectionString(url)
-	if err != nil {
-		log.Panicf("failed to parse connection string: %v", err)
-	}
-
-	esdbClient, err := esdb.NewClient(settings)
+	esdbClient, err := models.NewEsdbClient(url)
 	if err != nil {
 		log.Fatalf("failed to create EventStoreDB client: %v", err)
 	}
 
-	esdbConsumer := models.NewEventStreamConsumer(esdbClient, url, &models.MovingAverageCrossEvent{})
+	// Create a new event stream consumer
+	streamConsumer := models.NewEventStreamConsumer(esdbClient, url, &models.MovingAverageCrossEvent{})
 
-	esdbConsumer.Start(ctx, wg)
+	// Start a goroutine to consume events
+	services.ConsumeMACrossoverEvents(streamConsumer, wg)
 
-	time.Sleep(2 * time.Second)
+	if err := streamConsumer.Start(ctx, wg); err != nil {
+		log.Fatalf("failed to start consumer: %v", err)
+	}
 
-	generateRandomCandles(esdbClient)
+	// Produce some MA crossover events
+	if err := services.ProduceMACrossoverEvents(ctx, esdbClient, 4); err != nil {
+		log.Fatalf("failed to produce MA crossover events: %v", err)
+	}
+
+	log.Info("main: waiting for shutdown signal: press Ctrl+C to stop")
 
 	// Block here until program is shut down
 	<-stop

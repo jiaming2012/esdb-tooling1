@@ -9,26 +9,30 @@ import (
 	"sync"
 
 	"github.com/EventStore/EventStore-Client-Go/v4/esdb"
+	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 )
 
-type eventStreamConsumer[T StreamEvent] struct {
+type EventStreamConsumer[T StreamEvent] struct {
 	wg          *sync.WaitGroup
 	db          *esdb.Client
 	url         string
-	mu          sync.Mutex
-	savedEvents []T
+	savedEvents chan T
 	streamName  StreamName
 }
 
-func (cli *eventStreamConsumer[T]) replayEvents(ctx context.Context, stream StreamName, lastEventNumber uint64) error {
+func (cli *EventStreamConsumer[T]) GetEvents() <-chan T {
+	return cli.savedEvents
+}
+
+func (cli *EventStreamConsumer[T]) replayEvents(ctx context.Context, stream StreamName, lastEventNumber uint64) error {
 	if lastEventNumber == 0 {
 		return nil
 	}
 
 	event, err := cli.db.ReadStream(ctx, string(stream), esdb.ReadStreamOptions{}, lastEventNumber)
 	if err != nil {
-		return fmt.Errorf("eventStoreDBClient: failed to read stream %s: %v", stream, err)
+		return fmt.Errorf("EventStreamConsumer.replayEvents: failed to read stream %s: %v", stream, err)
 	}
 
 	for {
@@ -38,27 +42,27 @@ func (cli *eventStreamConsumer[T]) replayEvents(ctx context.Context, stream Stre
 				break
 			}
 
-			return fmt.Errorf("eventStoreDBClient: failed to read event from stream: %v", err)
+			return fmt.Errorf("EventStreamConsumer.replayEvents: failed to read event from stream: %v", err)
 		}
 
-		if err := cli.processEvent(event.Event); err != nil {
-			return fmt.Errorf("eventStoreDBClient: failed to process event: %v", err)
+		if err := cli.processEvent(event.Event, true); err != nil {
+			return fmt.Errorf("EventStreamConsumer.replayEvents: failed to process event: %v", err)
 		}
 	}
 
 	return nil
 }
 
-func (cli *eventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sync.WaitGroup, stream StreamName, initialEventNumber uint64) (chan error, error) {
+func (cli *EventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sync.WaitGroup, stream StreamName, initialEventNumber uint64) (chan error, error) {
 	subscription, err := cli.db.SubscribeToStream(ctx, string(stream), esdb.SubscribeToStreamOptions{
 		From: esdb.Revision(initialEventNumber),
 	})
 
 	if err != nil {
-		return nil, fmt.Errorf("eventStoreDBClient: failed to subscribe to stream: %v", err)
+		return nil, fmt.Errorf("EventStreamConsumer.subscribeToStream: failed to subscribe to stream: %v", err)
 	}
 
-	log.Infof("esdbConsumer: subscribed to stream %s", stream)
+	log.Infof("esdbConsumer: subscribed to stream %s @ positon %v", stream, initialEventNumber)
 
 	lastEventNumber := initialEventNumber
 
@@ -95,21 +99,29 @@ func (cli *eventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 
 				lastEventNumber = event.EventAppeared.OriginalEvent().EventNumber
 
-				if err := cli.processEvent(ev); err != nil {
+				if err := cli.processEvent(ev, false); err != nil {
 					errCh <- fmt.Errorf("eventStoreDBClient: failed to process event: %v", err)
 					return
 				}
 			}
 
-			log.Infof("re-subscribing subscription @ pos %v", lastEventNumber)
-
-			subscription, err = cli.db.SubscribeToStream(ctx, string(stream), esdb.SubscribeToStreamOptions{
-				From: esdb.Revision(lastEventNumber),
-			})
-
-			if err != nil {
-				log.Errorf("eventStoreDBClient: failed to subscribe to stream: %v", err)
+			select {
+			case <-ctx.Done(): 
+				// Check if the context is cancelled or expired
+				log.Infof("context cancelled or deadline exceeded")
+				cli.stop()
 				return
+			default:
+				// Context is not cancelled, proceed with the operation
+				log.Infof("re-subscribing subscription @ position %v", lastEventNumber)
+
+				subscription, err = cli.db.SubscribeToStream(ctx, string(stream), esdb.SubscribeToStreamOptions{
+					From: esdb.Revision(lastEventNumber),
+				})
+
+				if err != nil {
+					log.Errorf("eventStoreDBClient: failed to subscribe to stream: %v", err)
+				}
 			}
 		}
 	}()
@@ -117,51 +129,60 @@ func (cli *eventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 	return errCh, nil
 }
 
-func (cli *eventStreamConsumer[T]) processEvent(event *esdb.RecordedEvent) error {
+func (cli *EventStreamConsumer[T]) processEvent(event *esdb.RecordedEvent, isReplay bool) error {
 	var savedEvent T
 
 	if err := json.Unmarshal(event.Data, &savedEvent); err != nil {
 		return fmt.Errorf("esdbConsumer.processEvent: failed to unmarshal event data: %v", err)
 	}
 
-	cli.mu.Lock()
-	cli.savedEvents = append(cli.savedEvents, savedEvent)
-	cli.mu.Unlock()
+	meta := savedEvent.GetStreamEventMeta()
+	
+	meta.SetMeta(uuid.Nil, isReplay)
+
+	cli.savedEvents <- savedEvent
 
 	return nil
 }
 
-func (cli *eventStreamConsumer[T]) Start(ctx context.Context, wg *sync.WaitGroup) {
+func (cli *EventStreamConsumer[T]) stop() {
+	cli.db.Close()
+	close(cli.savedEvents)
+}
+
+func (cli *EventStreamConsumer[T]) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	settings, err := esdb.ParseConnectionString(cli.url)
 	if err != nil {
-		log.Panicf("failed to parse connection string: %v", err)
+		return fmt.Errorf("eventStreamConsumer: failed to parse connection string: %v", err)
 	}
 
 	cli.db, err = esdb.NewClient(settings)
 	if err != nil {
-		log.Panicf("failed to create client: %v", err)
+		return fmt.Errorf("eventStreamConsumer: failed to create client: %v", err)
 	}
 
 	lastEventNumber, err := FindStreamLastEventNumber(ctx, cli.db, cli.streamName)
 	if err != nil {
-		log.Panicf("eventStoreDBClient: failed to find last event number: %v", err)
+		return fmt.Errorf("eventStreamConsumer: failed to find last event number: %v", err)
 	}
 
 	if err := cli.replayEvents(ctx, cli.streamName, lastEventNumber); err != nil {
-		log.Panicf("eventStoreDBClient: failed to replay events: %v", err)
+		return fmt.Errorf("eventStreamConsumer: failed to replay events: %v", err)
 	}
 
 	if _, err := cli.subscribeToStream(ctx, wg, cli.streamName, lastEventNumber); err != nil {
-		log.Panicf("eventStoreDBClient: failed to subscribe to stream: %v", err)
+		return fmt.Errorf("eventStreamConsumer: failed to subscribe to stream: %v", err)
 	}
+
+	return nil
 }
 
-func NewEventStreamConsumer[T StreamEvent](db *esdb.Client, url string, instance T) *eventStreamConsumer[T] {
-	return &eventStreamConsumer[T]{
+func NewEventStreamConsumer[T StreamEvent](db *esdb.Client, url string, instance T) *EventStreamConsumer[T] {
+	return &EventStreamConsumer[T]{
 		wg:          &sync.WaitGroup{},
 		db:          db,
 		url:         url,
-		savedEvents: make([]T, 0),
+		savedEvents: make(chan T),
 		streamName:  instance.GetStreamEventHeader().StreamName,
 	}
 }
