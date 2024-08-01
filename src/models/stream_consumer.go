@@ -62,7 +62,7 @@ func (cli *EventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 		return nil, fmt.Errorf("EventStreamConsumer.subscribeToStream: failed to subscribe to stream: %v", err)
 	}
 
-	log.Infof("esdbConsumer: subscribed to stream %s @ positon %v", stream, initialEventNumber)
+	log.Infof("EventStreamConsumer: subscribed to stream %s @ positon %v", stream, initialEventNumber)
 
 	lastEventNumber := initialEventNumber
 
@@ -76,14 +76,14 @@ func (cli *EventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 		for {
 			for {
 				if subscription == nil {
-					log.Debugf("subscription is nil")
+					log.Debugf("EventStreamConsumer.subscribeToStream: subscription is nil")
 					break
 				}
 
 				event := subscription.Recv()
 
 				if event.SubscriptionDropped != nil {
-					log.Infof("Subscription dropped: %v", event.SubscriptionDropped.Error)
+					log.Infof("EventStreamConsumer.subscribeToStream: subscription dropped: %v", event.SubscriptionDropped.Error)
 					break
 				}
 
@@ -92,7 +92,7 @@ func (cli *EventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 				}
 
 				if event.CheckPointReached != nil {
-					log.Infof("checkpoint reached: %v\n", event.CheckPointReached)
+					log.Infof("EventStreamConsumer.subscribeToStream: checkpoint reached: %v\n", event.CheckPointReached)
 				}
 
 				ev := event.EventAppeared.Event
@@ -100,27 +100,27 @@ func (cli *EventStreamConsumer[T]) subscribeToStream(ctx context.Context, wg *sy
 				lastEventNumber = event.EventAppeared.OriginalEvent().EventNumber
 
 				if err := cli.processEvent(ev, false); err != nil {
-					errCh <- fmt.Errorf("eventStoreDBClient: failed to process event: %v", err)
+					errCh <- fmt.Errorf("EventStreamConsumer.subscribeToStream: failed to process event: %v", err)
 					return
 				}
 			}
 
 			select {
-			case <-ctx.Done(): 
+			case <-ctx.Done():
 				// Check if the context is cancelled or expired
-				log.Infof("context cancelled or deadline exceeded")
+				log.Infof("EventStreamConsumer.subscribeToStream: context cancelled or deadline exceeded")
 				cli.stop()
 				return
 			default:
 				// Context is not cancelled, proceed with the operation
-				log.Infof("re-subscribing subscription @ position %v", lastEventNumber)
+				log.Infof("EventStreamConsumer.subscribeToStream: re-subscribing subscription @ position %v", lastEventNumber)
 
 				subscription, err = cli.db.SubscribeToStream(ctx, string(stream), esdb.SubscribeToStreamOptions{
 					From: esdb.Revision(lastEventNumber),
 				})
 
 				if err != nil {
-					log.Errorf("eventStoreDBClient: failed to subscribe to stream: %v", err)
+					log.Errorf("EventStreamConsumer.subscribeToStream: failed to subscribe to stream: %v", err)
 				}
 			}
 		}
@@ -133,11 +133,11 @@ func (cli *EventStreamConsumer[T]) processEvent(event *esdb.RecordedEvent, isRep
 	var savedEvent T
 
 	if err := json.Unmarshal(event.Data, &savedEvent); err != nil {
-		return fmt.Errorf("esdbConsumer.processEvent: failed to unmarshal event data: %v", err)
+		return fmt.Errorf("EventStreamConsumer.subscribeToStream: failed to unmarshal event data: %v", err)
 	}
 
 	meta := savedEvent.GetStreamEventMeta()
-	
+
 	meta.SetMeta(uuid.Nil, isReplay)
 
 	cli.savedEvents <- savedEvent
@@ -153,25 +153,25 @@ func (cli *EventStreamConsumer[T]) stop() {
 func (cli *EventStreamConsumer[T]) Start(ctx context.Context, wg *sync.WaitGroup) error {
 	settings, err := esdb.ParseConnectionString(cli.url)
 	if err != nil {
-		return fmt.Errorf("eventStreamConsumer: failed to parse connection string: %v", err)
+		return fmt.Errorf("eventStreamConsumer.Start: failed to parse connection string: %v", err)
 	}
 
 	cli.db, err = esdb.NewClient(settings)
 	if err != nil {
-		return fmt.Errorf("eventStreamConsumer: failed to create client: %v", err)
+		return fmt.Errorf("eventStreamConsumer.Start: failed to create client: %v", err)
 	}
 
 	lastEventNumber, err := FindStreamLastEventNumber(ctx, cli.db, cli.streamName)
 	if err != nil {
-		return fmt.Errorf("eventStreamConsumer: failed to find last event number: %v", err)
+		return fmt.Errorf("eventStreamConsumer.Start: failed to find last event number: %v", err)
 	}
 
 	if err := cli.replayEvents(ctx, cli.streamName, lastEventNumber); err != nil {
-		return fmt.Errorf("eventStreamConsumer: failed to replay events: %v", err)
+		return fmt.Errorf("eventStreamConsumer.Start: failed to replay events: %v", err)
 	}
 
 	if _, err := cli.subscribeToStream(ctx, wg, cli.streamName, lastEventNumber); err != nil {
-		return fmt.Errorf("eventStreamConsumer: failed to subscribe to stream: %v", err)
+		return fmt.Errorf("eventStreamConsumer.Start: failed to subscribe to stream: %v", err)
 	}
 
 	return nil

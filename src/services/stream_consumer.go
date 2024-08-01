@@ -25,6 +25,6 @@ func ConsumeMACrossoverEvents(consumer *models.EventStreamConsumer[*models.Movin
 			log.Infof("Received event: RequestID:%s, State: %s", ev.RequestID, ev.State)
 		}
 
-		log.Info("esdbConsumer: stopped consuming events")
+		log.Info("ConsumeMACrossoverEvents: stopped consuming events")
 	}()
 }

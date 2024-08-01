@@ -3,7 +3,6 @@ package models
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/EventStore/EventStore-Client-Go/v4/esdb"
@@ -26,13 +25,13 @@ func (cli *EsdbProducer) insertEvent(ctx context.Context, eventType EventType, s
 	}
 
 	if cli.db == nil {
-		return errors.New("db is nil")
+		return fmt.Errorf("EsdbProducer.insertEvent: db is nil")
 	}
 
 	// todo: verify that the stream is thread safe
 	_, err := cli.db.AppendToStream(ctx, string(streamName), esdb.AppendToStreamOptions{}, eventData)
 	if err != nil {
-		return fmt.Errorf("failed to append event to stream: %w", err)
+		return fmt.Errorf("EsdbProducer.insertEvent: failed to append event to stream: %w", err)
 	}
 
 	return nil
@@ -49,7 +48,7 @@ func (cli *EsdbProducer) insertData(ctx context.Context, event StreamEvent) erro
 	log.Debugf("saving %s to stream %s ...", header.EventType, header.StreamName)
 
 	if err := cli.insertEvent(ctx, header.EventType, header.StreamName, nil, bytes); err != nil {
-		return fmt.Errorf("EsdbProducer: failed to insert event: %w", err)
+		return fmt.Errorf("EsdbProducer.insertData: failed to insert event: %w", err)
 	}
 
 	return nil

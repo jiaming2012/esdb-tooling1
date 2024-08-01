@@ -33,7 +33,7 @@ func ProduceMACrossoverEvents(ctx context.Context, cli *esdb.Client, count int) 
 		}
 
 		if err := esdbProducer.SaveData(ctx, candle); err != nil {
-			return fmt.Errorf("failed to save data: %v", err)
+			return fmt.Errorf("ProduceMACrossoverEvents: failed to save data: %v", err)
 		}
 
 		log.Infof("Produced MA crossover event: %s", candle.RequestID)
